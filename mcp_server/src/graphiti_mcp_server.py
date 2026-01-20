@@ -167,6 +167,8 @@ class GraphitiService:
         self.semaphore = asyncio.Semaphore(semaphore_limit)
         self.client: Graphiti | None = None
         self.entity_types = None
+        self.edge_types = None
+        self.edge_type_map = None
 
     async def initialize(self) -> None:
         """Initialize the Graphiti client with factory-created components."""
@@ -208,6 +210,34 @@ class GraphitiService:
 
             # Store entity types for later use
             self.entity_types = custom_types
+
+            # Build edge types from configuration
+            custom_edge_types = None
+            if self.config.graphiti.edge_types:
+                custom_edge_types = {}
+                for edge_type in self.config.graphiti.edge_types:
+                    edge_model = type(
+                        edge_type.name,
+                        (BaseModel,),
+                        {
+                            '__doc__': edge_type.description,
+                        },
+                    )
+                    custom_edge_types[edge_type.name] = edge_model
+
+            # Store edge types for later use
+            self.edge_types = custom_edge_types
+
+            # Build edge type map from configuration
+            edge_map = None
+            if self.config.graphiti.edge_type_map:
+                edge_map = {}
+                for mapping in self.config.graphiti.edge_type_map:
+                    key = (mapping.source_type, mapping.target_type)
+                    edge_map[key] = mapping.allowed_edges
+
+            # Store edge type map for later use
+            self.edge_type_map = edge_map or {}
 
             # Initialize Graphiti client with appropriate driver
             try:
@@ -302,6 +332,15 @@ class GraphitiService:
             else:
                 logger.info('Using default entity types')
 
+            if self.edge_types:
+                edge_type_names = list(self.edge_types.keys())
+                logger.info(f'Using custom edge types: {", ".join(edge_type_names)}')
+            else:
+                logger.info('Using default edge types')
+
+            if self.edge_type_map:
+                logger.info(f'Using edge type map with {len(self.edge_type_map)} mappings')
+
             logger.info(f'Using database: {self.config.database.provider}')
             logger.info(f'Using group_id: {self.config.graphiti.group_id}')
 
@@ -392,6 +431,8 @@ async def add_memory(
             source_description=source_description,
             episode_type=episode_type,
             entity_types=graphiti_service.entity_types,
+            edge_types=graphiti_service.edge_types,
+            edge_type_map=graphiti_service.edge_type_map,
             uuid=uuid or None,  # Ensure None is passed if uuid is None
         )
 

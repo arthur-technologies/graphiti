@@ -106,6 +106,8 @@ class QueueService:
         source_description: str,
         episode_type: Any,
         entity_types: Any,
+        edge_types: Any,
+        edge_type_map: Any,
         uuid: str | None,
     ) -> int:
         """Add an episode for processing.
@@ -117,6 +119,8 @@ class QueueService:
             source_description: Description of the episode source
             episode_type: Type of the episode
             entity_types: Entity types for extraction
+            edge_types: Edge types for relationship extraction
+            edge_type_map: Mapping of entity type pairs to allowed edge types
             uuid: Episode UUID
 
         Returns:
@@ -139,6 +143,8 @@ class QueueService:
                     group_id=group_id,
                     reference_time=datetime.now(timezone.utc),
                     entity_types=entity_types,
+                    edge_types=edge_types,
+                    edge_type_map=edge_type_map,
                     uuid=uuid,
                 )
 

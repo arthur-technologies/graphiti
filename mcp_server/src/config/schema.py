@@ -212,6 +212,21 @@ class EntityTypeConfig(BaseModel):
     description: str
 
 
+class EdgeTypeConfig(BaseModel):
+    """Edge type configuration."""
+
+    name: str
+    description: str
+
+
+class EdgeTypeMapConfig(BaseModel):
+    """Edge type mapping configuration."""
+
+    source_type: str
+    target_type: str
+    allowed_edges: list[str]
+
+
 class GraphitiAppConfig(BaseModel):
     """Graphiti-specific configuration."""
 
@@ -219,6 +234,8 @@ class GraphitiAppConfig(BaseModel):
     episode_id_prefix: str | None = Field(default='', description='Episode ID prefix')
     user_id: str = Field(default='mcp_user', description='User ID')
     entity_types: list[EntityTypeConfig] = Field(default_factory=list)
+    edge_types: list[EdgeTypeConfig] = Field(default_factory=list)
+    edge_type_map: list[EdgeTypeMapConfig] = Field(default_factory=list)
 
     def model_post_init(self, __context) -> None:
         """Convert None to empty string for episode_id_prefix."""
