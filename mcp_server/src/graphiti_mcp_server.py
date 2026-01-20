@@ -143,10 +143,34 @@ For optimal performance, ensure the database is properly configured and accessib
 API keys are provided for any language model operations.
 """
 
-# MCP server instance
+# Configure MCP transport security for internal Docker network
+# Allow requests from internal services using Docker service names
+from mcp.server.transport_security import TransportSecuritySettings
+
+transport_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,  # Keep protection enabled
+    allowed_hosts=[
+        'localhost:8000',        # Local development
+        'localhost:*',           # Any local port
+        'graphiti:8000',         # Docker service name (internal network)
+        'graphiti:*',            # Any port on graphiti service
+        'arthur-graphiti:8000',  # Container name (internal network)
+        'arthur-graphiti:*',     # Any port on container
+        '127.0.0.1:8000',       # Loopback
+        '0.0.0.0:8000',         # Bind address
+        '172.18.0.*:8000',      # Docker internal network IPs
+    ],
+    allowed_origins=['*']        # Allow any origin for internal API
+)
+
+logger.info("✅ Configured transport security for internal Docker network")
+logger.info(f"   Allowed hosts: {', '.join(transport_security.allowed_hosts[:5])}...")
+
+# MCP server instance with security settings
 mcp = FastMCP(
     'Graphiti Agent Memory',
     instructions=GRAPHITI_MCP_INSTRUCTIONS,
+    transport_security=transport_security  # Apply security settings
 )
 
 # Global services
