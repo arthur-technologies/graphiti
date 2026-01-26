@@ -139,7 +139,9 @@ class LLMClientFactory:
 
                 # Only pass reasoning/verbosity parameters for reasoning models (gpt-5 family)
                 if is_reasoning_model:
-                    return OpenAIClient(config=llm_config, reasoning='minimal', verbosity='low')
+                    # Use configured reasoning level or default to 'medium' for gpt-5 family
+                    reasoning_level = config.reasoning or 'medium'
+                    return OpenAIClient(config=llm_config, reasoning=reasoning_level, verbosity='low')
                 else:
                     # For non-reasoning models, explicitly pass None to disable these parameters
                     return OpenAIClient(config=llm_config, reasoning=None, verbosity=None)

@@ -152,6 +152,10 @@ class LLMConfig(BaseModel):
         default=None, description='Temperature (optional, defaults to None for reasoning models)'
     )
     max_tokens: int = Field(default=4096, description='Max tokens')
+    reasoning: str | None = Field(
+        default=None,
+        description='Reasoning effort for OpenAI reasoning models (gpt-5 family). Options: minimal, low, medium, high, intense. Defaults to minimal if not specified for reasoning models.',
+    )
     providers: LLMProvidersConfig = Field(default_factory=LLMProvidersConfig)
 
 

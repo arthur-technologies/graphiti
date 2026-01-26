@@ -37,35 +37,37 @@ RUN groupadd -r app && useradd -r -d /app -g app app
 
 # Set up the server application first
 WORKDIR /app
-COPY ./server/pyproject.toml ./server/README.md ./server/uv.lock ./
-COPY ./server/graph_service ./graph_service
 
-# Install server dependencies (without graphiti-core from lockfile)
-# Then install graphiti-core from PyPI at the desired version
-# This prevents the stale lockfile from pinning an old graphiti-core version
+# Copy the local graphiti_core package first
+COPY ./graphiti_core ./graphiti_core
+COPY ./pyproject.toml ./py.typed ./README.md ./
+
+# Copy server files
+COPY ./server/pyproject.toml ./server/README.md ./server/uv.lock ./server/
+COPY ./server/graph_service ./server/graph_service
+
+# Install server dependencies first, then override with local graphiti_core
+# This ensures we use the local code with gpt-5 support instead of PyPI version
 ARG INSTALL_FALKORDB=false
-RUN --mount=type=cache,target=/root/.cache/uv \
+RUN cd /app/server && \
     uv sync --frozen --no-dev && \
-    if [ -n "$GRAPHITI_VERSION" ]; then \
-        if [ "$INSTALL_FALKORDB" = "true" ]; then \
-            uv pip install --system --upgrade "graphiti-core[falkordb]==$GRAPHITI_VERSION"; \
-        else \
-            uv pip install --system --upgrade "graphiti-core==$GRAPHITI_VERSION"; \
-        fi; \
-    else \
-        if [ "$INSTALL_FALKORDB" = "true" ]; then \
-            uv pip install --system --upgrade "graphiti-core[falkordb]"; \
-        else \
-            uv pip install --system --upgrade graphiti-core; \
-        fi; \
-    fi
+    rm -rf /app/server/.venv/lib/python3.12/site-packages/graphiti_core && \
+    rm -rf /app/server/.venv/lib/python3.12/site-packages/graphiti_core-*.dist-info && \
+    cd /app && \
+    find graphiti_core -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true && \
+    cp -r /app/graphiti_core /app/server/.venv/lib/python3.12/site-packages/ && \
+    grep "is_reasoning_model" /app/server/.venv/lib/python3.12/site-packages/graphiti_core/llm_client/openai_client.py && \
+    python -m compileall /app/server/.venv/lib/python3.12/site-packages/graphiti_core
+
+# Set the working directory to server for runtime
+WORKDIR /app/server
 
 # Change ownership to app user
 RUN chown -R app:app /app
 
-# Set environment variables
+# Set environment variables - use the server's venv, not /app/.venv
 ENV PYTHONUNBUFFERED=1 \
-    PATH="/app/.venv/bin:$PATH"
+    PATH="/app/server/.venv/bin:$PATH"
 
 # Switch to non-root user
 USER app
@@ -74,5 +76,5 @@ USER app
 ENV PORT=8000
 EXPOSE $PORT
 
-# Use uv run for execution
-CMD ["uv", "run", "uvicorn", "graph_service.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run uvicorn directly from the venv without uv (which would resync and overwrite our local graphiti_core)
+CMD ["python", "-m", "uvicorn", "graph_service.main:app", "--host", "0.0.0.0", "--port", "8000"]
