@@ -2,7 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from functools import partial
 
-from fastapi import APIRouter, FastAPI, status
+from fastapi import APIRouter, FastAPI, Query, status
 from graphiti_core.nodes import EpisodeType  # type: ignore
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data  # type: ignore
 
@@ -109,3 +109,56 @@ async def clear(
     await clear_data(graphiti.driver)
     await graphiti.build_indices_and_constraints()
     return Result(message='Graph cleared', success=True)
+
+
+@router.post('/communities/build', status_code=status.HTTP_200_OK)
+async def build_communities_endpoint(
+    graphiti: ZepGraphitiDep,
+    group_id: str = Query(..., description="Organization ID to build communities for"),
+):
+    """
+    Build communities (topics) for an organization using label propagation
+    algorithm and LLM summarization.
+
+    Communities group related entities together and generate descriptive
+    names/summaries for each cluster. This should be called after processing
+    meeting episodes to populate the "Topics" tab on the Knowledge page.
+
+    Args:
+        group_id: Organization ID to build communities for
+
+    Returns:
+        Result with number of communities created and their names
+    """
+    print(f'🏘️ [Graphiti] Building communities for group {group_id}...')
+
+    try:
+        # Use graphiti.build_communities() which:
+        # 1. Creates community objects via label propagation
+        # 2. Generates embeddings for community names
+        # 3. Saves community nodes to Neo4j
+        # 4. Saves community edges to Neo4j
+        # (The raw build_communities function only does step 1 - it doesn't save!)
+        communities, edges = await graphiti.build_communities(
+            group_ids=[group_id]
+        )
+
+        community_names = [c.name for c in communities]
+        print(f'✅ [Graphiti] Built and saved {len(communities)} communities: {community_names}')
+
+        return Result(
+            message=f'Built {len(communities)} communities for group {group_id}',
+            success=True,
+            data={
+                'communities_created': len(communities),
+                'edges_created': len(edges),
+                'community_names': community_names
+            }
+        )
+    except Exception as e:
+        print(f'❌ [Graphiti] Error building communities: {e}')
+        return Result(
+            message=f'Failed to build communities: {str(e)}',
+            success=False,
+            data={'error': str(e)}
+        )

@@ -35,6 +35,10 @@ class AddMeetingEpisodeRequest(BaseModel):
     source_description: str = Field(default="meeting_transcript", description="Source description")
     reference_time: Optional[str] = Field(default=None, description="ISO datetime when episode occurred")
     metadata: Optional[Dict] = Field(default=None, description="Additional metadata")
+    custom_extraction_instructions: Optional[str] = Field(
+        default=None,
+        description="Custom instructions to guide LLM extraction (e.g., for user memory extraction)"
+    )
 
 
 class BulkEpisodeItem(BaseModel):
@@ -108,6 +112,7 @@ async def add_meeting_episode(
             source=EpisodeType.text,
             source_description=request.source_description,
             reference_time=ref_time,
+            custom_extraction_instructions=request.custom_extraction_instructions,
             # NO entity_types, edge_types, or edge_type_map
             # Graphiti will use its default LLM-based extraction
         )
@@ -167,6 +172,7 @@ async def add_meeting_episode_sync(
             source=EpisodeType.text,
             source_description=request.source_description,
             reference_time=ref_time,
+            custom_extraction_instructions=request.custom_extraction_instructions,
         )
 
         end_time = datetime.now(timezone.utc)

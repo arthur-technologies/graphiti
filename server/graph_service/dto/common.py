@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from graphiti_core.utils.datetime_utils import utc_now
 from pydantic import BaseModel, Field
@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class Result(BaseModel):
     message: str
     success: bool
+    data: dict[str, Any] | None = Field(default=None, description='Optional additional data')
 
 
 class Message(BaseModel):
