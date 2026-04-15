@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -72,6 +72,30 @@ class ComprehensiveSearchResults(BaseModel):
     facts: list[FactResult] = Field(default_factory=list, description='Relationship facts/edges')
     entities: list[EntityResult] = Field(default_factory=list, description='Entity nodes with summaries')
     communities: list[CommunityResult] = Field(default_factory=list, description='Community cluster summaries')
+
+
+SourceLookupType = Literal['fact', 'entity', 'community', 'topic']
+
+
+class EpisodeSourceResult(BaseModel):
+    uuid: str
+    name: str
+    source: str | None = None
+    source_description: str | None = None
+    content: str | None = None
+    valid_at: datetime | None = None
+    created_at: datetime | None = None
+    matched_entity_count: int | None = None
+    matched_entity_names: list[str] = Field(default_factory=list)
+
+    class Config:
+        json_encoders = {datetime: lambda v: v.astimezone(timezone.utc).isoformat() if v else None}
+
+
+class SourceResults(BaseModel):
+    item_type: SourceLookupType
+    item_uuid: str
+    sources: list[EpisodeSourceResult] = Field(default_factory=list)
 
 
 class GetMemoryRequest(BaseModel):

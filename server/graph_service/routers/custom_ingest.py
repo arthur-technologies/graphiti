@@ -189,6 +189,7 @@ async def add_meeting_episode_sync(
             data={
                 'episode_uuid': result.episode.uuid,
                 'nodes_created': len(result.nodes),
+                'node_uuids': [node.uuid for node in result.nodes],
                 'edges_created': len(result.edges),
                 'processing_time_ms': round(duration_ms),
             }

@@ -31,7 +31,10 @@ class Summary(BaseModel):
 
 
 class SummaryDescription(BaseModel):
-    description: str = Field(..., description='One sentence description of the provided summary')
+    description: str = Field(
+        ...,
+        description='Short topic-style title for the provided summary, ideally 2 to 6 words',
+    )
 
 
 class Prompt(Protocol):
@@ -109,13 +112,33 @@ def summary_description(context: dict[str, Any]) -> list[Message]:
     return [
         Message(
             role='system',
-            content='You are a helpful assistant that describes provided contents in a single sentence.',
+            content='You are a helpful assistant that names a cluster of related content with a short professional topic title.',
         ),
         Message(
             role='user',
             content=f"""
-        Create a short one sentence description of the summary that explains what kind of information is summarized.
-        Summaries must be under 250 characters.
+        Create a short topic title for the summary below.
+
+        REQUIREMENTS:
+        - Return a topic-style label, not a sentence
+        - Prefer 2 to 6 words
+        - Use Title Case
+        - Maximum 60 characters
+        - Focus on the main shared subject only
+        - Do not start with phrases like "Summary of", "Overview of", "A brief summary of", or "Summarizes"
+        - Do not mention that the text is a summary
+        - Do not include trailing punctuation
+        - Do not include filler words like "discussion of", "topics covered", or "information about"
+
+        GOOD EXAMPLES:
+        - Macroeconomic and AI Risk
+        - Camera Collectibles and Scams
+        - Team Communication Problems
+
+        BAD EXAMPLES:
+        - Summary of issues caused by poor coach communication and the need for improved communication
+        - A brief summary of claims about a creator community
+        - Overview of topics covered: Black comedians' cultural impact and social-commentary humor
 
         Summary:
         {to_prompt_json(context['summary'])}

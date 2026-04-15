@@ -4,12 +4,14 @@ from .retrieve import (
     ComprehensiveSearchQuery,
     ComprehensiveSearchResults,
     CommunityResult,
+    EpisodeSourceResult,
     EntityResult,
     FactResult,
     GetMemoryRequest,
     GetMemoryResponse,
     SearchQuery,
     SearchResults,
+    SourceResults,
 )
 
 __all__ = [
@@ -23,7 +25,9 @@ __all__ = [
     'FactResult',
     'EntityResult',
     'CommunityResult',
+    'EpisodeSourceResult',
     'Result',
     'GetMemoryRequest',
     'GetMemoryResponse',
+    'SourceResults',
 ]

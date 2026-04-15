@@ -77,4 +77,6 @@ ENV PORT=8000
 EXPOSE $PORT
 
 # Run uvicorn directly from the venv without uv (which would resync and overwrite our local graphiti_core)
-CMD ["python", "-m", "uvicorn", "graph_service.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use multiple workers so long-running community builds do not starve health checks and searches.
+ENV UVICORN_WORKERS=2
+CMD ["sh", "-c", "python -m uvicorn graph_service.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-2}"]

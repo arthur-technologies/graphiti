@@ -16,7 +16,7 @@ limitations under the License.
 
 import logging
 from datetime import datetime
-from time import time
+from time import perf_counter, time
 
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -81,6 +81,7 @@ from graphiti_core.utils.bulk_utils import (
 from graphiti_core.utils.datetime_utils import utc_now
 from graphiti_core.utils.maintenance.community_operations import (
     build_communities,
+    maintain_communities_for_entities as maintain_communities_for_entities_op,
     remove_communities,
     update_community,
 )
@@ -102,6 +103,13 @@ from graphiti_core.utils.maintenance.node_operations import (
 from graphiti_core.utils.ontology_utils.entity_types_utils import validate_entity_types
 
 logger = logging.getLogger(__name__)
+
+
+def emit_progress(message: str, *args: object) -> None:
+    if args:
+        message = message % args
+    logger.info(message)
+    print(message, flush=True)
 
 load_dotenv()
 
@@ -1266,28 +1274,94 @@ class Graphiti:
         if driver is None:
             driver = self.clients.driver
 
-        # Clear existing communities
-        await remove_communities(driver)
+        build_start = perf_counter()
+        emit_progress('Graphiti build_communities: starting for groups=%s', group_ids)
 
+        cluster_build_start = perf_counter()
         community_nodes, community_edges = await build_communities(
             driver, self.llm_client, group_ids
         )
+        emit_progress(
+            'Graphiti build_communities: cluster generation produced %s nodes and %s edges in %.2fs',
+            len(community_nodes),
+            len(community_edges),
+            perf_counter() - cluster_build_start,
+        )
 
+        embed_start = perf_counter()
         await semaphore_gather(
             *[node.generate_name_embedding(self.embedder) for node in community_nodes],
             max_coroutines=self.max_coroutines,
         )
+        emit_progress(
+            'Graphiti build_communities: generated embeddings for %s communities in %.2fs',
+            len(community_nodes),
+            perf_counter() - embed_start,
+        )
 
+        # Keep the prior topics in place while the expensive cluster/summarize pass runs.
+        # Only replace the target group's communities once the new set is ready to save.
+        remove_start = perf_counter()
+        await remove_communities(driver, group_ids)
+        emit_progress(
+            'Graphiti build_communities: removed prior communities for groups=%s in %.2fs',
+            group_ids,
+            perf_counter() - remove_start,
+        )
+
+        save_nodes_start = perf_counter()
         await semaphore_gather(
             *[node.save(driver) for node in community_nodes],
             max_coroutines=self.max_coroutines,
         )
+        emit_progress(
+            'Graphiti build_communities: saved %s community nodes in %.2fs',
+            len(community_nodes),
+            perf_counter() - save_nodes_start,
+        )
+
+        save_edges_start = perf_counter()
         await semaphore_gather(
             *[edge.save(driver) for edge in community_edges],
             max_coroutines=self.max_coroutines,
         )
+        emit_progress(
+            'Graphiti build_communities: saved %s community edges in %.2fs',
+            len(community_edges),
+            perf_counter() - save_edges_start,
+        )
+
+        emit_progress(
+            'Graphiti build_communities: completed for groups=%s in %.2fs',
+            group_ids,
+            perf_counter() - build_start,
+        )
 
         return community_nodes, community_edges
+
+    async def maintain_communities_for_entities(
+        self,
+        group_id: str,
+        entity_uuids: list[str],
+        driver: GraphDriver | None = None,
+    ) -> dict[str, object]:
+        """
+        Incrementally maintain communities for a meeting-sized delta of touched entities.
+
+        This updates existing communities once per affected community and creates
+        new communities only for sufficiently connected touched entities that do
+        not already belong to a community.
+        """
+        if driver is None:
+            driver = self.clients.driver
+
+        return await maintain_communities_for_entities_op(
+            driver,
+            self.llm_client,
+            self.embedder,
+            group_id,
+            entity_uuids,
+        )
 
     @handle_multiple_group_ids
     async def search(

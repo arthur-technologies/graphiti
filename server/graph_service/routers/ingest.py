@@ -5,6 +5,7 @@ from functools import partial
 from fastapi import APIRouter, FastAPI, Query, status
 from graphiti_core.nodes import EpisodeType  # type: ignore
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data  # type: ignore
+from pydantic import BaseModel
 
 from graph_service.dto import AddEntityNodeRequest, AddMessagesRequest, Message, Result
 from graph_service.zep_graphiti import ZepGraphitiDep
@@ -36,6 +37,11 @@ class AsyncWorker:
 
 
 async_worker = AsyncWorker()
+
+
+class MaintainCommunitiesRequest(BaseModel):
+    group_id: str
+    entity_uuids: list[str]
 
 
 @asynccontextmanager
@@ -161,4 +167,36 @@ async def build_communities_endpoint(
             message=f'Failed to build communities: {str(e)}',
             success=False,
             data={'error': str(e)}
+        )
+
+
+@router.post('/communities/maintain', status_code=status.HTTP_200_OK)
+async def maintain_communities_endpoint(
+    request: MaintainCommunitiesRequest,
+    graphiti: ZepGraphitiDep,
+):
+    """
+    Incrementally maintain communities for a targeted set of touched entities.
+
+    This is intended for post-meeting maintenance: update existing communities
+    once per affected community, and create new communities only for strong
+    emerging clusters in the meeting delta.
+    """
+    try:
+        result = await graphiti.maintain_communities_for_entities(
+            group_id=request.group_id,
+            entity_uuids=request.entity_uuids,
+        )
+
+        return Result(
+            message='Community maintenance complete',
+            success=True,
+            data=result,
+        )
+    except Exception as e:
+        print(f'❌ [Graphiti] Error maintaining communities: {e}')
+        return Result(
+            message=f'Failed to maintain communities: {str(e)}',
+            success=False,
+            data={'error': str(e)},
         )

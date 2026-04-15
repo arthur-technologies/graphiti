@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, HTTPException, Query, status
+from graphiti_core.helpers import parse_db_date
+from graphiti_core.nodes import EpisodicNode
 from graphiti_core.search.search_config import (
     EdgeReranker,
     EdgeSearchConfig,
@@ -18,12 +20,14 @@ from graph_service.dto import (
     ComprehensiveSearchQuery,
     ComprehensiveSearchResults,
     CommunityResult,
+    EpisodeSourceResult,
     EntityResult,
     GetMemoryRequest,
     GetMemoryResponse,
     Message,
     SearchQuery,
     SearchResults,
+    SourceResults,
 )
 from graph_service.zep_graphiti import ZepGraphitiDep, get_fact_result_from_edge
 
@@ -71,6 +75,35 @@ def get_community_result(community) -> CommunityResult:
         name=community.name,
         summary=getattr(community, 'summary', None),
         created_at=getattr(community, 'created_at', None),
+    )
+
+
+def get_episode_source_result(
+    episode: EpisodicNode,
+    matched_entity_count: int | None = None,
+    matched_entity_names: list[str] | None = None,
+) -> EpisodeSourceResult:
+    source = getattr(episode, 'source', None)
+    return EpisodeSourceResult(
+        uuid=episode.uuid,
+        name=episode.name,
+        source=source.value if hasattr(source, 'value') else source,
+        source_description=getattr(episode, 'source_description', None),
+        content=getattr(episode, 'content', None),
+        valid_at=getattr(episode, 'valid_at', None),
+        created_at=getattr(episode, 'created_at', None),
+        matched_entity_count=matched_entity_count,
+        matched_entity_names=matched_entity_names or [],
+    )
+
+
+def sort_episode_sources(sources: list[EpisodeSourceResult]) -> list[EpisodeSourceResult]:
+    return sorted(
+        sources,
+        key=lambda source: (
+            source.valid_at or source.created_at or datetime.min.replace(tzinfo=timezone.utc)
+        ),
+        reverse=True,
     )
 
 
@@ -125,6 +158,88 @@ async def search_all(query: ComprehensiveSearchQuery, graphiti: ZepGraphitiDep):
         entities=entities,
         communities=communities,
     )
+
+
+@router.get('/sources/{item_type}/{uuid}', status_code=status.HTTP_200_OK)
+async def get_sources(
+    item_type: str,
+    uuid: str,
+    graphiti: ZepGraphitiDep,
+    group_id: str = Query(..., description='The group/org id to scope source lookup'),
+    limit: int = Query(12, ge=1, le=50),
+):
+    normalized_type = item_type.lower()
+    if normalized_type not in {'fact', 'entity', 'community', 'topic'}:
+        raise HTTPException(status_code=400, detail='Unsupported item type')
+
+    if normalized_type == 'fact':
+        edge = await graphiti.get_entity_edge(uuid)
+        episode_uuids = list(dict.fromkeys(edge.episodes or []))
+        if not episode_uuids:
+            return SourceResults(item_type='fact', item_uuid=uuid, sources=[])
+
+        episodes = await EpisodicNode.get_by_uuids(graphiti.driver, episode_uuids)
+        sources = sort_episode_sources([
+            get_episode_source_result(episode)
+            for episode in episodes
+            if episode.group_id == group_id
+        ])[:limit]
+
+        return SourceResults(item_type='fact', item_uuid=uuid, sources=sources)
+
+    if normalized_type == 'entity':
+        episodes = await EpisodicNode.get_by_entity_node_uuid(graphiti.driver, uuid)
+        sources = sort_episode_sources([
+            get_episode_source_result(episode)
+            for episode in episodes
+            if episode.group_id == group_id
+        ])[:limit]
+
+        return SourceResults(item_type='entity', item_uuid=uuid, sources=sources)
+
+    records, _, _ = await graphiti.driver.execute_query(
+        """
+        MATCH (c:Community {uuid: $uuid, group_id: $group_id})-[:HAS_MEMBER]->(entity:Entity)
+        MATCH (episode:Episodic {group_id: $group_id})-[:MENTIONS]->(entity)
+        WITH
+            episode,
+            count(DISTINCT entity) AS matched_entity_count,
+            collect(DISTINCT entity.name)[0..5] AS matched_entity_names
+        RETURN
+            episode.uuid AS uuid,
+            episode.name AS name,
+            episode.source AS source,
+            episode.source_description AS source_description,
+            episode.content AS content,
+            episode.valid_at AS valid_at,
+            episode.created_at AS created_at,
+            matched_entity_count,
+            matched_entity_names
+        ORDER BY matched_entity_count DESC, episode.valid_at DESC, episode.created_at DESC
+        LIMIT $limit
+        """,
+        uuid=uuid,
+        group_id=group_id,
+        limit=limit,
+        routing_='r',
+    )
+
+    sources = [
+        EpisodeSourceResult(
+            uuid=record['uuid'],
+            name=record['name'],
+            source=record['source'],
+            source_description=record['source_description'],
+            content=record['content'],
+            valid_at=parse_db_date(record['valid_at']),
+            created_at=parse_db_date(record['created_at']),
+            matched_entity_count=record['matched_entity_count'],
+            matched_entity_names=record['matched_entity_names'] or [],
+        )
+        for record in records
+    ]
+
+    return SourceResults(item_type='topic', item_uuid=uuid, sources=sources)
 
 
 @router.get('/entity-edge/{uuid}', status_code=status.HTTP_200_OK)
