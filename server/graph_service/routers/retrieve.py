@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
+from graphiti_core.driver.driver import GraphProvider
 from graphiti_core.helpers import parse_db_date
 from graphiti_core.nodes import EpisodicNode
 from graphiti_core.search.search_config import (
@@ -24,6 +25,7 @@ from graph_service.dto import (
     EntityResult,
     GetMemoryRequest,
     GetMemoryResponse,
+    GroupStatsResult,
     Message,
     SearchQuery,
     SearchResults,
@@ -107,6 +109,43 @@ def sort_episode_sources(sources: list[EpisodeSourceResult]) -> list[EpisodeSour
     )
 
 
+def _parse_count(records: list[dict], key: str = 'count') -> int:
+    if not records:
+        return 0
+
+    value = records[0].get(key, 0)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _get_fact_count_query(provider: GraphProvider) -> str:
+    if provider == GraphProvider.KUZU:
+        return """
+            MATCH (n:Entity {group_id: $group_id})-[:RELATES_TO]->(e:RelatesToNode_ {group_id: $group_id})-[:RELATES_TO]->(m:Entity {group_id: $group_id})
+            RETURN count(DISTINCT e) AS count
+        """
+
+    return """
+        MATCH (n:Entity {group_id: $group_id})-[e:RELATES_TO {group_id: $group_id}]->(m:Entity {group_id: $group_id})
+        RETURN count(e) AS count
+    """
+
+
+def _get_relationship_type_count_query(provider: GraphProvider) -> str:
+    if provider == GraphProvider.KUZU:
+        return """
+            MATCH (n:Entity {group_id: $group_id})-[:RELATES_TO]->(e:RelatesToNode_ {group_id: $group_id})-[:RELATES_TO]->(:Entity {group_id: $group_id})
+            RETURN count(DISTINCT e.name) AS count
+        """
+
+    return """
+        MATCH (n:Entity {group_id: $group_id})-[e:RELATES_TO {group_id: $group_id}]->(:Entity {group_id: $group_id})
+        RETURN count(DISTINCT e.name) AS count
+    """
+
+
 @router.post('/search', status_code=status.HTTP_200_OK)
 async def search(query: SearchQuery, graphiti: ZepGraphitiDep):
     relevant_edges = await graphiti.search(
@@ -117,6 +156,46 @@ async def search(query: SearchQuery, graphiti: ZepGraphitiDep):
     facts = [get_fact_result_from_edge(edge) for edge in relevant_edges]
     return SearchResults(
         facts=facts,
+    )
+
+
+@router.get('/stats/{group_id}', status_code=status.HTTP_200_OK)
+async def get_group_stats(group_id: str, graphiti: ZepGraphitiDep):
+    driver = graphiti.driver
+
+    entity_records, _, _ = await driver.execute_query(
+        """
+        MATCH (n:Entity {group_id: $group_id})
+        RETURN count(n) AS count
+        """,
+        group_id=group_id,
+        routing_='r',
+    )
+    community_records, _, _ = await driver.execute_query(
+        """
+        MATCH (c:Community {group_id: $group_id})
+        RETURN count(c) AS count
+        """,
+        group_id=group_id,
+        routing_='r',
+    )
+    fact_records, _, _ = await driver.execute_query(
+        _get_fact_count_query(driver.provider),
+        group_id=group_id,
+        routing_='r',
+    )
+    relationship_type_records, _, _ = await driver.execute_query(
+        _get_relationship_type_count_query(driver.provider),
+        group_id=group_id,
+        routing_='r',
+    )
+
+    return GroupStatsResult(
+        group_id=group_id,
+        facts_count=_parse_count(fact_records),
+        entities_count=_parse_count(entity_records),
+        communities_count=_parse_count(community_records),
+        relationship_types_count=_parse_count(relationship_type_records),
     )
 
 

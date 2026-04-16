@@ -74,6 +74,14 @@ class ComprehensiveSearchResults(BaseModel):
     communities: list[CommunityResult] = Field(default_factory=list, description='Community cluster summaries')
 
 
+class GroupStatsResult(BaseModel):
+    group_id: str
+    facts_count: int
+    entities_count: int
+    communities_count: int
+    relationship_types_count: int
+
+
 SourceLookupType = Literal['fact', 'entity', 'community', 'topic']
 
 
