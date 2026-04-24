@@ -12,6 +12,10 @@ class SearchQuery(BaseModel):
     )
     query: str
     max_facts: int = Field(default=10, description='The maximum number of facts to retrieve')
+    allowed_meeting_ids: list[str] | None = Field(
+        None,
+        description='Optional meeting UUIDs the caller is allowed to access for source ACL filtering',
+    )
 
 
 class ComprehensiveSearchQuery(BaseModel):
@@ -24,6 +28,10 @@ class ComprehensiveSearchQuery(BaseModel):
     include_facts: bool = Field(default=True, description='Include facts/edges in results')
     include_entities: bool = Field(default=True, description='Include entity nodes in results')
     include_communities: bool = Field(default=True, description='Include community summaries in results')
+    allowed_meeting_ids: list[str] | None = Field(
+        None,
+        description='Optional meeting UUIDs the caller is allowed to access for source ACL filtering',
+    )
 
 
 class FactResult(BaseModel):

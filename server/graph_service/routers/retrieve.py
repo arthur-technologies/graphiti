@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -34,6 +35,10 @@ from graph_service.dto import (
 from graph_service.zep_graphiti import ZepGraphitiDep, get_fact_result_from_edge
 
 router = APIRouter()
+
+MEETING_SOURCE_DESCRIPTION_PREFIX = 'meeting_transcript:'
+ACL_SEARCH_OVERFETCH_MULTIPLIER = 4
+ACL_SEARCH_MAX_RESULTS = 50
 
 # Tuned search config - balanced between precision and recall
 # No BFS to avoid graph traversal noise, lowered similarity threshold for better recall
@@ -120,6 +125,174 @@ def _parse_count(records: list[dict], key: str = 'count') -> int:
         return 0
 
 
+def _normalize_allowed_meeting_ids(allowed_meeting_ids: list[str] | None) -> list[str]:
+    if not allowed_meeting_ids:
+        return []
+
+    return [meeting_id for meeting_id in dict.fromkeys(allowed_meeting_ids) if meeting_id]
+
+
+def _get_acl_search_limit(requested_limit: int) -> int:
+    if requested_limit <= 0:
+        return 0
+
+    return min(
+        ACL_SEARCH_MAX_RESULTS,
+        max(requested_limit, requested_limit * ACL_SEARCH_OVERFETCH_MULTIPLIER),
+    )
+
+
+def _parse_meeting_id_from_source_description(
+    source_description: str | None, expected_group_id: str
+) -> str | None:
+    if not source_description or not source_description.startswith(MEETING_SOURCE_DESCRIPTION_PREFIX):
+        return None
+
+    parts = source_description.split(':')
+    if len(parts) < 3:
+        return None
+
+    _, group_id, meeting_id, *_ = parts
+    if group_id != expected_group_id or not meeting_id:
+        return None
+
+    return meeting_id
+
+
+async def _filter_edges_by_allowed_meetings(
+    graphiti: ZepGraphitiDep,
+    group_id: str,
+    edges,
+    allowed_meeting_ids: list[str],
+):
+    if not edges or not allowed_meeting_ids:
+        return []
+
+    episode_uuids = list(
+        dict.fromkeys(
+            episode_uuid
+            for edge in edges
+            for episode_uuid in (edge.episodes or [])
+            if episode_uuid
+        )
+    )
+    if not episode_uuids:
+        return []
+
+    allowed_meeting_id_set = set(allowed_meeting_ids)
+    episodes = await EpisodicNode.get_by_uuids(graphiti.driver, episode_uuids)
+    allowed_episode_uuids = {
+        episode.uuid
+        for episode in episodes
+        if episode.group_id == group_id
+        and (
+            _parse_meeting_id_from_source_description(
+                getattr(episode, 'source_description', None), group_id
+            )
+            in allowed_meeting_id_set
+        )
+    }
+
+    if not allowed_episode_uuids:
+        return []
+
+    return [
+        edge
+        for edge in edges
+        if any(episode_uuid in allowed_episode_uuids for episode_uuid in (edge.episodes or []))
+    ]
+
+
+async def _get_accessible_entity_uuids(
+    graphiti: ZepGraphitiDep,
+    group_id: str,
+    entity_uuids: list[str],
+    allowed_meeting_ids: list[str],
+) -> set[str]:
+    if not entity_uuids or not allowed_meeting_ids:
+        return set()
+
+    records, _, _ = await graphiti.driver.execute_query(
+        """
+        MATCH (episode:Episodic {group_id: $group_id})-[:MENTIONS]->(entity:Entity {group_id: $group_id})
+        WHERE entity.uuid IN $entity_uuids
+          AND episode.source_description IS NOT NULL
+          AND episode.source_description STARTS WITH $source_prefix
+          AND size(split(episode.source_description, ':')) >= 3
+          AND split(episode.source_description, ':')[1] = $group_id
+          AND split(episode.source_description, ':')[2] IN $allowed_meeting_ids
+        RETURN DISTINCT entity.uuid AS uuid
+        """,
+        group_id=group_id,
+        entity_uuids=entity_uuids,
+        allowed_meeting_ids=allowed_meeting_ids,
+        source_prefix=MEETING_SOURCE_DESCRIPTION_PREFIX,
+        routing_='r',
+    )
+
+    return {record['uuid'] for record in records if record.get('uuid')}
+
+
+async def _get_accessible_community_uuids(
+    graphiti: ZepGraphitiDep,
+    group_id: str,
+    community_uuids: list[str],
+    allowed_meeting_ids: list[str],
+) -> set[str]:
+    if not community_uuids or not allowed_meeting_ids:
+        return set()
+
+    records, _, _ = await graphiti.driver.execute_query(
+        """
+        MATCH (community:Community {group_id: $group_id})-[:HAS_MEMBER]->(entity:Entity {group_id: $group_id})
+        MATCH (episode:Episodic {group_id: $group_id})-[:MENTIONS]->(entity)
+        WHERE community.uuid IN $community_uuids
+          AND episode.source_description IS NOT NULL
+          AND episode.source_description STARTS WITH $source_prefix
+          AND size(split(episode.source_description, ':')) >= 3
+          AND split(episode.source_description, ':')[1] = $group_id
+          AND split(episode.source_description, ':')[2] IN $allowed_meeting_ids
+        RETURN DISTINCT community.uuid AS uuid
+        """,
+        group_id=group_id,
+        community_uuids=community_uuids,
+        allowed_meeting_ids=allowed_meeting_ids,
+        source_prefix=MEETING_SOURCE_DESCRIPTION_PREFIX,
+        routing_='r',
+    )
+
+    return {record['uuid'] for record in records if record.get('uuid')}
+
+
+async def _filter_search_results_by_allowed_meetings(
+    graphiti: ZepGraphitiDep,
+    group_id: str,
+    *,
+    edges,
+    nodes,
+    communities,
+    allowed_meeting_ids: list[str],
+) -> tuple[list, list, list]:
+    if not allowed_meeting_ids:
+        return [], [], []
+
+    entity_uuids = [node.uuid for node in nodes]
+    community_uuids = [community.uuid for community in communities]
+
+    filtered_edges, accessible_entity_uuids, accessible_community_uuids = await asyncio.gather(
+        _filter_edges_by_allowed_meetings(graphiti, group_id, edges, allowed_meeting_ids),
+        _get_accessible_entity_uuids(graphiti, group_id, entity_uuids, allowed_meeting_ids),
+        _get_accessible_community_uuids(graphiti, group_id, community_uuids, allowed_meeting_ids),
+    )
+
+    filtered_nodes = [node for node in nodes if node.uuid in accessible_entity_uuids]
+    filtered_communities = [
+        community for community in communities if community.uuid in accessible_community_uuids
+    ]
+
+    return filtered_edges, filtered_nodes, filtered_communities
+
+
 def _get_fact_count_query(provider: GraphProvider) -> str:
     if provider == GraphProvider.KUZU:
         return """
@@ -148,14 +321,33 @@ def _get_relationship_type_count_query(provider: GraphProvider) -> str:
 
 @router.post('/search', status_code=status.HTTP_200_OK)
 async def search(query: SearchQuery, graphiti: ZepGraphitiDep):
+    allowed_meeting_ids = _normalize_allowed_meeting_ids(query.allowed_meeting_ids)
+    requested_limit = max(query.max_facts, 0)
+    search_limit = (
+        _get_acl_search_limit(requested_limit) if allowed_meeting_ids else requested_limit
+    )
+
     relevant_edges = await graphiti.search(
         group_ids=query.group_ids,
         query=query.query,
-        num_results=query.max_facts,
+        num_results=search_limit,
     )
+
+    if allowed_meeting_ids:
+        normalized_group_ids = [group_id for group_id in (query.group_ids or []) if group_id]
+        if len(normalized_group_ids) != 1:
+            relevant_edges = []
+        else:
+            relevant_edges = await _filter_edges_by_allowed_meetings(
+                graphiti,
+                normalized_group_ids[0],
+                relevant_edges,
+                allowed_meeting_ids,
+            )
+
     facts = [get_fact_result_from_edge(edge) for edge in relevant_edges]
     return SearchResults(
-        facts=facts,
+        facts=facts[:requested_limit],
     )
 
 
@@ -211,12 +403,18 @@ async def search_all(query: ComprehensiveSearchQuery, graphiti: ZepGraphitiDep):
 
     Uses tuned search config to reduce noise while maintaining good recall.
     """
+    allowed_meeting_ids = _normalize_allowed_meeting_ids(query.allowed_meeting_ids)
+    requested_limit = max(query.max_results, 0)
+    search_limit = (
+        _get_acl_search_limit(requested_limit) if allowed_meeting_ids else requested_limit
+    )
+
     # Create config with requested limit
     config = SearchConfig(
         edge_config=MEETING_SEARCH_CONFIG.edge_config if query.include_facts else None,
         node_config=MEETING_SEARCH_CONFIG.node_config if query.include_entities else None,
         community_config=MEETING_SEARCH_CONFIG.community_config if query.include_communities else None,
-        limit=query.max_results,
+        limit=search_limit,
         reranker_min_score=MEETING_SEARCH_CONFIG.reranker_min_score,
     )
 
@@ -227,10 +425,44 @@ async def search_all(query: ComprehensiveSearchQuery, graphiti: ZepGraphitiDep):
         group_ids=query.group_ids,
     )
 
+    filtered_edges = results.edges
+    filtered_nodes = results.nodes
+    filtered_communities = results.communities
+
+    if allowed_meeting_ids:
+        normalized_group_ids = [group_id for group_id in (query.group_ids or []) if group_id]
+        if len(normalized_group_ids) != 1:
+            filtered_edges = []
+            filtered_nodes = []
+            filtered_communities = []
+        else:
+            filtered_edges, filtered_nodes, filtered_communities = (
+                await _filter_search_results_by_allowed_meetings(
+                    graphiti,
+                    normalized_group_ids[0],
+                    edges=results.edges,
+                    nodes=results.nodes,
+                    communities=results.communities,
+                    allowed_meeting_ids=allowed_meeting_ids,
+                )
+            )
+
     # Convert to response format
-    facts = [get_fact_result_from_edge(edge) for edge in results.edges] if query.include_facts else []
-    entities = [get_entity_result(node) for node in results.nodes] if query.include_entities else []
-    communities = [get_community_result(comm) for comm in results.communities] if query.include_communities else []
+    facts = (
+        [get_fact_result_from_edge(edge) for edge in filtered_edges[:requested_limit]]
+        if query.include_facts
+        else []
+    )
+    entities = (
+        [get_entity_result(node) for node in filtered_nodes[:requested_limit]]
+        if query.include_entities
+        else []
+    )
+    communities = (
+        [get_community_result(comm) for comm in filtered_communities[:requested_limit]]
+        if query.include_communities
+        else []
+    )
 
     return ComprehensiveSearchResults(
         facts=facts,
